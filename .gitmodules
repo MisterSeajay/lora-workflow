@@ -1,3 +1,6 @@
 [submodule "run-training/sd-scripts"]
 	path = run-training/sd-scripts
 	url = https://github.com/kohya-ss/sd-scripts
+[submodule "run-training/kohya_ss"]
+	path = run-training/kohya_ss
+	url = https://github.com/bmaltais/kohya_ss.git
