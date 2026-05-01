@@ -12,8 +12,9 @@ from types import TracebackType
 from typing import Any, Generator, Tuple
 
 import loguru
-from lrxml_extractor import LrXmlExtractor
 from tabulate import tabulate
+
+from .lrxml_extractor import LrXmlExtractor
 
 logger = loguru.logger
 

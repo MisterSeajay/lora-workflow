@@ -1,3 +1,3 @@
-from png_extractor import PNGExtractor
+from .png_extractor import PNGExtractor
 
 __all__ = ["PNGExtractor"]

@@ -10,9 +10,9 @@ import os
 import re
 import sys
 
-from lightroom.lrxml_extractor import LrXmlExtractor
+from images import PNGExtractor
+from lightroom import LrXmlExtractor
 from loguru import logger
-from png_tools.png_extractor import PNGExtractor
 
 
 def configure_logging(args: argparse.Namespace):
