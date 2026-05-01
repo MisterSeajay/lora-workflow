@@ -4,6 +4,7 @@ A helper for reading Lightroom XML data, especially image metadata.
 
 import xml.etree.ElementTree as ET
 import zlib
+from typing import Any
 
 from loguru import logger
 
@@ -33,222 +34,216 @@ class LrXmlExtractor:
     def __init__(self):
         self.xml = None
 
+    ############################################################################
+    # Methods to load data from raw XML
+
     def _decompress_metadata(self, compressed_data: bytes) -> str:
-        """
-        Decompresses metadata stored in the Adobe_AdditionalMetadata table.
-        """
         if compressed_data[:2] == b"\x78\x9c":
             xml_bytes = zlib.decompress(compressed_data)
         else:
             xml_bytes = zlib.decompress(compressed_data[4:])
         return xml_bytes.decode("utf-8")
 
-    def clean_xml(self, xml: str | None = None) -> str:
-        """
-        Cleans up the XML string by removing unnecessary elements.
-        """
+    def _clean_xml(self, xml: str | None = None) -> str:
         if not xml:
-            if self.xml:
-                xml = self.xml
-
+            xml = self.xml
         if not xml:
             raise ValueError("No XML data to clean.")
 
         cleaned = True
         while cleaned:
             cleaned = False
-
-            # Remove any BOM if present
-            if xml[0] == "\ufeff":
+            if xml.startswith("\ufeff"):
                 xml = xml[1:]
                 cleaned = True
                 continue
-
-            # Remove any leading null bytes
             if xml.startswith("\x00"):
                 xml = xml[1:]
                 cleaned = True
                 continue
-
-            # Remove <?xpacket ... ?> element from the start of the XML
             if xml.startswith("<?xpacket"):
                 xml = xml[xml.find("?>") + 2 :].strip()
                 cleaned = True
                 continue
-
-            # Remove <?xpacket ... ?> element from the end of the XML. It seems
-            # that the raw XML sometimes has multiple (corrupt) xpacket elements
-            # at the end, so we need to find the start of the first one and
-            # remove everything after that.
             if xml.rfind("<?xpacket end") > 0:
                 xml = xml[: xml.rfind("<?xpacket")].strip()
                 cleaned = True
                 continue
-
             xml = xml.strip()
-
         return xml
 
     def load_xml(self, *, xml: str | None = None, binary: bytes | None = None) -> None:
-        """
-        Loads the XML data into the object's self.xml attribute, as a string.
-        """
         assert xml or binary, "Either XML or binary data must be provided."
-
         if binary:
             xml = self._decompress_metadata(binary)
-
         if not xml:
             raise ValueError("No XML data provided.")
 
-        clean_xml = self.clean_xml(xml)
-        if not clean_xml:
+        c_xml = self._clean_xml(xml)
+        if not c_xml:
             raise ValueError("No XML data loaded after cleaning.")
+        self.xml = c_xml
 
-        self.xml = clean_xml
+    ############################################################################
+    # Methods to export data from clean XML
 
-    def _extract_alt_text(self, element: ET.Element, field: str) -> str:
-        """
-        Extracts the text from an Alt element.
-        """
-        alt_element = element.find(f"{field}/rdf:Alt/rdf:li", namespaces=NAMESPACES)
-        if alt_element and alt_element.text:
-            return alt_element.text
-        else:
-            return ""
+    @staticmethod
+    def _get_ns_attr(
+        node: ET.Element | None, ns_key: str, attr_name: str, default: str = ""
+    ) -> str:
+        if node is None:
+            return default
+        full_name = f"{{{NAMESPACES[ns_key]}}}{attr_name}"
+        return node.get(full_name, default)
 
-    def _extract_bag_items(self, element: ET.Element, field: str) -> list:
-        """
-        Extracts the items from a Bag element.
-        """
-        items = []
-        bag_element = element.find(f"{field}/rdf:Bag", namespaces=NAMESPACES)
-        if bag_element is not None:
-            items = [
-                li.text for li in bag_element.findall("rdf:li", namespaces=NAMESPACES)
-            ]
-        return items
+    def _extract_bag_items(
+        self, element: ET.Element, ns_key: str, tag: str
+    ) -> list[str]:
+        path = f"{{{NAMESPACES[ns_key]}}}{tag}/rdf:Bag"
+        bag_element = element.find(path, namespaces=NAMESPACES)
+        if bag_element is None:
+            return []
+        return [
+            li.text.strip()
+            for li in bag_element.findall("rdf:li", namespaces=NAMESPACES)
+            if li.text
+        ]
 
-    def _extract_metadata(self, xml_tree: ET.Element) -> dict[str, str]:
-        """
-        Parse XMP metadata string into a dictionary.
-        """
-        metadata = {}
-        description = xml_tree.find(".//rdf:Description", NAMESPACES)
-        if description:
-            metadata["xmpMM:DocumentID"] = description.get(
-                f"{{{NAMESPACES['xmpMM']}}}DocumentID", None
-            )
-            metadata["xmpMM:PreservedFileName"] = description.get(
-                f"{{{NAMESPACES['xmpMM']}}}PreservedFileName", None
-            )
-            metadata["xmpMM:OriginalDocumentID"] = description.get(
-                f"{{{NAMESPACES['xmpMM']}}}OriginalDocumentID", None
-            )
-            metadata["xmpMM:InstanceID"] = description.get(
-                f"{{{NAMESPACES['xmpMM']}}}InstanceID", None
-            )
-            metadata["dc:format"] = description.get(
-                f"{{{NAMESPACES['dc']}}}format", None
-            )
-            metadata["xmpDM:pick"] = description.get(
-                f"{{{NAMESPACES['xmpDM']}}}pick", None
-            )
-            metadata["xmp:MetadataDate"] = description.get(
-                f"{{{NAMESPACES['xmp']}}}MetadataDate", None
-            )
-            metadata["xmp:Rating"] = description.get(
-                f"{{{NAMESPACES['xmp']}}}Rating", None
-            )
-            metadata["xmp:CreatorTool"] = description.get(
-                f"{{{NAMESPACES['xmp']}}}CreatorTool", None
-            )
-            metadata["xmp:ModifyDate"] = description.get(
-                f"{{{NAMESPACES['xmp']}}}ModifyDate", None
-            )
-            metadata["Iptc4xmpCore:Location"] = description.get(
-                f"{{{NAMESPACES['Iptc4xmpCore']}}}Location", None
-            )
-            metadata["exif:ExifVersion"] = description.get(
-                f"{{{NAMESPACES['exif']}}}ExifVersion", None
-            )
-            metadata["tiff:XResolution"] = description.get(
-                f"{{{NAMESPACES['tiff']}}}XResolution", None
-            )
-            metadata["tiff:YResolution"] = description.get(
-                f"{{{NAMESPACES['tiff']}}}YResolution", None
-            )
-            metadata["tiff:ResolutionUnit"] = description.get(
-                f"{{{NAMESPACES['tiff']}}}ResolutionUnit", None
-            )
-
-            metadata["dc:subject"] = self._extract_bag_items(
-                description, f"{{{NAMESPACES['dc']}}}subject"
-            )
-            metadata["lr:weightedFlatSubject"] = self._extract_bag_items(
-                description, f"{{{NAMESPACES['lr']}}}weightedFlatSubject"
-            )
-            metadata["lr:hierarchicalSubject"] = self._extract_bag_items(
-                description, f"{{{NAMESPACES['lr']}}}hierarchicalSubject"
-            )
-            metadata["Iptc4xmpExt:PersonInImage"] = self._extract_bag_items(
-                description, f"{{{NAMESPACES['Iptc4xmpExt']}}}PersonInImage"
-            )
-
-            region_list = description.find(
-                ".//mwg-rs:RegionList/rdf:Bag", namespaces=NAMESPACES
-            )
-            regions = []
-            if region_list is not None:
-                for region in region_list.findall("rdf:li", namespaces=NAMESPACES):
-                    region_desc = region.find("rdf:Description", namespaces=NAMESPACES)
-                    if region_desc is not None:
-                        region_data = {
-                            "mwg-rs:Rotation": region_desc.get(
-                                f"{{{NAMESPACES['mwg-rs']}}}Rotation", None
-                            ),
-                            "mwg-rs:Name": region_desc.get(
-                                f"{{{NAMESPACES['mwg-rs']}}}Name", None
-                            ),
-                            "mwg-rs:Type": region_desc.get(
-                                f"{{{NAMESPACES['mwg-rs']}}}Type", None
-                            ),
-                            "mwg-rs:Area": {
-                                "stArea:h": region_desc.find(
-                                    "mwg-rs:Area", namespaces=NAMESPACES
-                                ).get(f"{{{NAMESPACES['stArea']}}}h", None),
-                                "stArea:w": region_desc.find(
-                                    "mwg-rs:Area", namespaces=NAMESPACES
-                                ).get(f"{{{NAMESPACES['stArea']}}}w", None),
-                                "stArea:x": region_desc.find(
-                                    "mwg-rs:Area", namespaces=NAMESPACES
-                                ).get(f"{{{NAMESPACES['stArea']}}}x", None),
-                                "stArea:y": region_desc.find(
-                                    "mwg-rs:Area", namespaces=NAMESPACES
-                                ).get(f"{{{NAMESPACES['stArea']}}}y", None),
-                            },
-                        }
-                        regions.append(region_data)
-            metadata["mwg-rs:Regions"] = regions
-        else:
-            logger.warning("No description element found in XML data.")
-            logger.debug(xml_tree)
-        return metadata
-
-    def extract(self) -> dict[str, str]:
-        """
-        Extracts metadata from the XML data into a dictionary.
-        """
+    def extract(self) -> dict[str, Any]:
         if not self.xml:
-            raise ValueError("No XML data loaded to extract.")
+            raise ValueError("No XML loaded.")
 
         tree = ET.fromstring(self.xml)
-
-        rdf_data = tree.find(".//rdf:RDF", NAMESPACES)
-        if rdf_data is None:
-            logger.warning("No rdf_data element found in XML data.")
-            logger.debug(tree)
+        rdf = tree.find(".//rdf:RDF", NAMESPACES)
+        if rdf is None:
             return {}
 
-        metadata = self._extract_metadata(rdf_data)
-        return metadata
+        data = self.extract_metadata(rdf)
+        try:
+            data["regions"] = self.get_regions(rdf)
+        except ValueError:
+            data["regions"] = []
+
+        return data
+
+    def extract_alt_text(self, element: ET.Element, ns_key: str, tag: str) -> str:
+        path = f"{{{NAMESPACES[ns_key]}}}{tag}/rdf:Alt/rdf:li"
+        alt_element = element.find(path, namespaces=NAMESPACES)
+        return (
+            alt_element.text.strip()
+            if alt_element is not None and alt_element.text
+            else ""
+        )
+
+    def extract_metadata(self, xml_tree: ET.Element) -> dict[str, Any]:
+        description = xml_tree.find(".//rdf:Description", NAMESPACES)
+        if description is None:
+            logger.warning("No description element found.")
+            return {}
+
+        dims = self.get_dimensions(xml_tree)
+
+        return {
+            # Dimensions
+            "width": dims["width"],
+            "height": dims["height"],
+            "tiff:ImageWidth": dims["width"],  # Keep for backward compatibility
+            "tiff:ImageLength": dims["height"],
+            # Adobe Media Management
+            "xmpMM:DocumentID": self._get_ns_attr(description, "xmpMM", "DocumentID"),
+            "xmpMM:InstanceID": self._get_ns_attr(description, "xmpMM", "InstanceID"),
+            "xmpMM:OriginalDocumentID": self._get_ns_attr(
+                description, "xmpMM", "OriginalDocumentID"
+            ),
+            "xmpMM:PreservedFileName": self._get_ns_attr(
+                description, "xmpMM", "PreservedFileName"
+            ),
+            "xmpDM:pick": self._get_ns_attr(description, "xmpDM", "pick"),
+            # Photo Metadata
+            "xmp:MetadataDate": self._get_ns_attr(description, "xmp", "MetadataDate"),
+            "xmp:Rating": self._get_ns_attr(description, "xmp", "Rating"),
+            "xmp:CreatorTool": self._get_ns_attr(description, "xmp", "CreatorTool"),
+            "xmp:ModifyDate": self._get_ns_attr(description, "xmp", "ModifyDate"),
+            "exif:ExifVersion": self._get_ns_attr(description, "exif", "ExifVersion"),
+            # Resolution
+            "tiff:ResolutionUnit": self._get_ns_attr(
+                description, "tiff", "ResolutionUnit"
+            ),
+            "tiff:XResolution": self._get_ns_attr(description, "tiff", "XResolution"),
+            "tiff:YResolution": self._get_ns_attr(description, "tiff", "YResolution"),
+            # Location & Format
+            "Iptc4xmpCore:Location": self._get_ns_attr(
+                description, "Iptc4xmpCore", "Location"
+            ),
+            "dc:format": self._get_ns_attr(description, "dc", "format"),
+            # People & Keywords
+            "Iptc4xmpExt:PersonInImage": self._extract_bag_items(
+                description, "Iptc4xmpExt", "PersonInImage"
+            ),
+            "dc:subject": self._extract_bag_items(description, "dc", "subject"),
+            "lr:weightedFlatSubject": self._extract_bag_items(
+                description, "lr", "weightedFlatSubject"
+            ),
+            "lr:hierarchicalSubject": self._extract_bag_items(
+                description, "lr", "hierarchicalSubject"
+            ),
+            # Captions
+            "dc:title": self.extract_alt_text(description, "dc", "title"),
+            "dc:description": self.extract_alt_text(description, "dc", "description"),
+        }
+
+    def get_dimensions(self, xml_tree: ET.Element) -> dict[str, str]:
+        """
+        Standalone logic to find image dimensions across EXIF, TIFF, and stDim.
+        """
+        desc = xml_tree.find(".//rdf:Description", NAMESPACES)
+        if desc is None:
+            return {"width": "", "height": ""}
+
+        # 1. EXIF (Pixel Dimensions)
+        w = self._get_ns_attr(desc, "exif", "PixelXDimension")
+        h = self._get_ns_attr(desc, "exif", "PixelYDimension")
+
+        # 2. TIFF Fallback
+        if not w:
+            w = self._get_ns_attr(desc, "tiff", "ImageWidth")
+        if not h:
+            h = self._get_ns_attr(desc, "tiff", "ImageLength")
+
+        # 3. stDim Fallback (Adobe standard)
+        if not w or not h:
+            dim_node = desc.find("xmp:Dimensions", namespaces=NAMESPACES)
+            if dim_node is not None:
+                w = self._get_ns_attr(dim_node, "stDim", "w")
+                h = self._get_ns_attr(dim_node, "stDim", "h")
+
+        return {"width": w, "height": h}
+
+    def get_regions(self, xml_tree: ET.Element) -> list[dict[str, Any]]:
+        description = xml_tree.find(".//rdf:Description", NAMESPACES)
+        if description is None:
+            raise ValueError("No description element found.")
+
+        region_list = description.find(".//mwg-rs:RegionList/rdf:Bag", NAMESPACES)
+        if region_list is None:
+            return []
+
+        regions: list[dict[str, Any]] = []
+        for region in region_list.findall("rdf:li", NAMESPACES):
+            r_desc = region.find("rdf:Description", NAMESPACES)
+            if r_desc is None:
+                continue
+
+            area = r_desc.find("mwg-rs:Area", NAMESPACES)
+            this_region: dict[str, Any] = {
+                "mwg-rs:Name": self._get_ns_attr(r_desc, "mwg-rs", "Name"),
+                "mwg-rs:Type": self._get_ns_attr(r_desc, "mwg-rs", "Type"),
+                "mwg-rs:Area": {
+                    "stArea:h": float(self._get_ns_attr(area, "stArea", "h", "0")),
+                    "stArea:w": float(self._get_ns_attr(area, "stArea", "w", "0")),
+                    "stArea:x": float(self._get_ns_attr(area, "stArea", "x", "0")),
+                    "stArea:y": float(self._get_ns_attr(area, "stArea", "y", "0")),
+                },
+            }
+            regions.append(this_region)
+        return regions
