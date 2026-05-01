@@ -92,7 +92,6 @@ JOIN AgLibraryFolder
   ON AgLibraryFolder.id_local=AgLibraryFile.folder
 ```
 
-
 ### AgLibraryFolder
 
 ``` text
